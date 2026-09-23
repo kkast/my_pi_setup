@@ -1,0 +1,11 @@
+{
+  "name": "my-pi-keep-new-session-model",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keep the current model and thinking level when starting /new.",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["index.ts"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "my-pi-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sequential, interactive Pi workers with tmux and file-based communication.",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true },
+    "typebox": { "optional": true }
+  }
+}
