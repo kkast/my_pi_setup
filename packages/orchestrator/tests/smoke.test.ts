@@ -10,6 +10,10 @@ import { atomicJson, messages, parentDirectory, readWorker, workers } from "../s
 import { shellQuote } from "../tmux.ts";
 import { until } from "../../../tests/harness.ts";
 
+// Start the private server and synthetic parent without the runner's worker
+// linkage. Actual workers still receive their explicit launchArguments -e value.
+delete process.env.MY_PI_WORKER_DIR;
+
 const setupRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 let tmux: string | undefined;
 try { tmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim(); } catch { /* skipped below */ }
@@ -51,6 +55,7 @@ test("real Pi + private tmux: spawn, report, investigate, continue, persist", { 
     assert.equal(registry.length, 2);
     for (const { dir, worker } of registry) {
       assert.equal(worker.state, "waiting");
+      assert.ok(worker.panePid && worker.panePid > 0, "tmux pane PID saved for child-process diagnostics");
       assert.ok(worker.sessionFile && existsSync(worker.sessionFile));
       const transcript = readFileSync(worker.sessionFile!, "utf8");
       assert.ok(transcript.includes('"customType":"my-pi-worker"'));
@@ -65,9 +70,6 @@ test("real Pi + private tmux: spawn, report, investigate, continue, persist", { 
     const parentFile = readFileSync(join(config, "success"), "utf8");
     const parentTranscript = readFileSync(parentFile, "utf8");
     assert.ok(parentTranscript.includes("ORCHESTRATION_SMOKE_OK"));
-    if (existsSync(join(setupRoot, "packages", "last-reply-time", "index.ts"))) {
-      assert.ok(parentTranscript.includes('\"customType\":\"last-reply-time\"'), "timestamp package loaded through root manifest");
-    }
     assert.equal(readdirSync(join(temp, "parent-sessions")).length, 1);
 
     // Resume real saved sessions, without the worker launch environment.

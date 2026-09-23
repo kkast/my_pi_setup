@@ -38,8 +38,56 @@ export function launchArguments(options: {
   ];
 }
 
-export async function launch(options: Parameters<typeof launchArguments>[0]): Promise<void> {
+export async function launch(options: Parameters<typeof launchArguments>[0]): Promise<number | undefined> {
   await exec("tmux", launchArguments(options), { timeout: 10_000 });
+  try {
+    const { stdout } = await exec("tmux", ["display-message", "-p", "-t", `=${options.worker.tmux}:0.0`, "#{pane_pid}"], { timeout: 5_000 });
+    const pid = Number(stdout.trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    // A very short-lived Pi may already have closed the pane; the parent poller diagnoses it.
+    return undefined;
+  }
+}
+
+// Fail closed: only a positively identified, single-pane worker terminal may
+// be destroyed. Session IDs avoid tmux's prefix matching and name reuse.
+export async function stopWorkerTerminal(dir: string, worker: Worker, beforeKill: () => void): Promise<void> {
+  if (worker.tmux !== `pi-${worker.parentId.slice(0, 12)}-${worker.id}`) {
+    throw new Error("Worker terminal name does not match its ownership metadata.");
+  }
+  const run = async (args: string[]) => (await exec("tmux", args, { timeout: 5_000 })).stdout.trim();
+  let sessions: string;
+  try {
+    sessions = await run(["list-sessions", "-F", "#{session_name}\t#{session_id}"]);
+  } catch (error) {
+    const failure = error as { code?: unknown; stderr?: string };
+    // These are the only absence cases; permission/timeout/binary errors fail.
+    if (failure.code === 1 && /^(no server running on |error connecting to .* \(No such file or directory\))/.test(failure.stderr ?? "")) return;
+    throw error;
+  }
+  const session = sessions.split("\n").map((line) => line.split("\t")).find(([name]) => name === worker.tmux)?.[1];
+  if (!session) return;
+  if (!/^\$\d+$/.test(session)) throw new Error("Invalid tmux session identity.");
+  const panes = await run(["list-panes", "-s", "-t", session, "-F", "#{pane_pid}"]);
+  const environment = await run(["show-environment", "-t", session, "MY_PI_WORKER_DIR"]);
+  if (!worker.panePid || panes !== String(worker.panePid) || environment !== `MY_PI_WORKER_DIR=${dir}`) {
+    throw new Error("Cannot verify exclusive ownership of worker terminal; inspect it manually.");
+  }
+  beforeKill();
+  await run(["kill-session", "-t", session]);
+}
+
+// One asynchronous snapshot per parent poll, independent of roster size.
+export async function liveSessions(): Promise<Set<string>> {
+  try {
+    const { stdout } = await exec("tmux", ["list-sessions", "-F", "#{session_name}"], { timeout: 5_000 });
+    return new Set(stdout.trim().split("\n").filter(Boolean));
+  } catch (error) {
+    const failure = error as { code?: unknown; stderr?: string };
+    if (failure.code === 1 && /^(no server running on |error connecting to .* \(No such file or directory\))/.test(failure.stderr ?? "")) return new Set();
+    throw error;
+  }
 }
 
 export async function isAlive(name: string): Promise<boolean> {

@@ -4,7 +4,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 export function harness(id: string, entries: any[] = []) {
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
   const tools = new Map<string, any>();
+  let activeTools: string[] = [];
   const commands = new Map<string, any>();
+  const entryRenderers = new Map<string, any>();
   const delivered: any[] = [];
   const notices: string[] = [];
   const statuses = new Map<string, string | undefined>();
@@ -39,8 +41,11 @@ export function harness(id: string, entries: any[] = []) {
     on: (name: string, handler: (...args: any[]) => any) => {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
-    registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerTool: (tool: any) => { tools.set(tool.name, tool); activeTools.push(tool.name); },
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => { activeTools = [...names]; },
     registerCommand: (name: string, command: any) => commands.set(name, command),
+    registerEntryRenderer: (name: string, renderer: any) => entryRenderers.set(name, renderer),
     getThinkingLevel: () => "medium",
     setModel: async (model: any) => { modelChanges.push(model); return true; },
     setThinkingLevel: (level: any) => thinkingChanges.push(level),
@@ -58,7 +63,7 @@ export function harness(id: string, entries: any[] = []) {
   } as unknown as ExtensionAPI;
 
   return {
-    pi, ctx, entries, tools, commands, delivered, notices, statuses, modelChanges, thinkingChanges, emit,
+    pi, ctx, entries, tools, commands, entryRenderers, delivered, notices, statuses, modelChanges, thinkingChanges, emit,
     async start() { await emit("session_start", { reason: "startup" }); },
     async settle() { idle = true; await emit("agent_settled"); },
     async close(reason = "quit") { await emit("session_shutdown", { reason }); },

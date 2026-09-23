@@ -61,7 +61,9 @@ export default function (pi: ExtensionAPI) {
               assert.ok(spawn && spawn.role === "toolResult");
               const content = spawn.content[0];
               assert.equal(content.type, "text");
-              const workerId = JSON.parse(content.type === "text" ? content.text : "").worker_id;
+              const folder = /^Folder: (.+)$/m.exec(content.type === "text" ? content.text : "")?.[1];
+              assert.ok(folder, "spawn output includes worker folder");
+              const workerId = folder.split("/").at(-1)!;
               call = { name: "send_to_worker", arguments: { worker_id: workerId, message: "Use B findings and finish step A" } };
             } else {
               assert.equal(calls, 4, "extra model turn: handoff failed to yield");

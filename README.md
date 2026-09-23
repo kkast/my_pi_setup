@@ -6,7 +6,7 @@ Small, independent personal Pi packages.
 | --- | --- |
 | [`orchestrator`](packages/orchestrator/README.md) | Your planning conversation delegates to ordinary Pi workers in tmux, receives reports, and continues workers in their original contexts. |
 | [`keep-new-session-model`](packages/keep-new-session-model/README.md) | `/new` keeps the current model and thinking level. |
-| [`last-reply-time`](packages/last-reply-time/README.md) | Displays the last completed reply time in GMT+3. |
+| [`message-timestamps`](packages/message-timestamps/README.md) | Shows TUI-only GMT+3 timestamps after messages, outside the model prompt. |
 | [`usage`](packages/usage/README.md) | `/usage` shows available OpenAI Codex subscription usage windows. |
 
 ## Install
@@ -24,7 +24,7 @@ Or install only the packages you want:
 ```sh
 pi install /absolute/path/to/my_pi_setup/packages/orchestrator
 pi install /absolute/path/to/my_pi_setup/packages/keep-new-session-model
-pi install /absolute/path/to/my_pi_setup/packages/last-reply-time
+pi install /absolute/path/to/my_pi_setup/packages/message-timestamps
 pi install /absolute/path/to/my_pi_setup/packages/usage
 ```
 

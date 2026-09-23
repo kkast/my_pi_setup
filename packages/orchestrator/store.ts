@@ -8,6 +8,15 @@ export type Report = {
   checks: string[];
   question?: string;
   /** Pi runtime snapshot, attached after the worker settles; never supplied by the model. */
+  context_health?: {
+    compaction_count: number;
+    latest_compaction_at: string | null;
+    compacted_since_previous_report: boolean | null;
+    compacted_during_assignment: boolean | null;
+    tokens_before_compaction: number | null;
+    /** Branch IDs are the durable comparison baseline, not a process counter. */
+    compaction_ids: string[];
+  };
   context_usage?: {
     provider: string;
     model: string;
@@ -22,16 +31,21 @@ export type Worker = {
   parentId: string;
   sessionId: string;
   sessionFile?: string;
+  /** Stable display label for this worker, independent of its long instructions. */
+  title?: string;
+  panePid?: number;
+  launchFailed?: boolean;
   cwd: string;
   tmux: string;
-  state: "queued" | "running" | "waiting" | "stopped";
+  /** closed = explicitly retired by parent; stopped = exit/crash, possibly failure. */
+  state: "queued" | "running" | "waiting" | "stopped" | "closed";
 };
 
 export type Message = {
   id: string;
   parentId: string;
   workerId: string;
-} & ({ kind: "instruction"; text: string } | { kind: "report"; report: Report });
+} & ({ kind: "instruction"; text: string } | { kind: "failure"; text: string } | { kind: "report"; report: Report });
 
 export function safeId(id: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error(`Invalid ID: ${id}`);
@@ -106,11 +120,12 @@ export function messages<K extends Message["kind"]>(dir: string, kind: K): Array
   const inbox = join(dir, kind === "instruction" ? "to-worker" : "to-parent");
   if (!existsSync(inbox)) return [];
   const worker = readWorker(dir);
-  return readdirSync(inbox).filter((file) => file.endsWith(".json")).sort().map((file) => {
-    const msg = readJson<Extract<Message, { kind: K }>>(join(inbox, file));
-    if (msg.kind !== kind || msg.parentId !== worker.parentId || msg.workerId !== worker.id || file !== `${safeId(msg.id)}.json`) {
+  return readdirSync(inbox).filter((file) => file.endsWith(".json")).sort().flatMap((file) => {
+    const msg = readJson<Message>(join(inbox, file));
+    if (msg.parentId !== worker.parentId || msg.workerId !== worker.id || file !== `${safeId(msg.id)}.json` ||
+        (kind === "instruction" ? msg.kind !== "instruction" : msg.kind === "instruction")) {
       throw new Error(`Message does not belong to this worker: ${file}`);
     }
-    return msg;
+    return msg.kind === kind ? [msg as Extract<Message, { kind: K }>] : [];
   });
 }
