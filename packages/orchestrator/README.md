@@ -72,7 +72,13 @@ Parent prompt guidance is advisory, not a dispatch gate:
 
 No context percentage kills, automatically replaces, or prevents continuing a worker. Decisions wait for the settled report, never interrupting mid-edit. Assignment notices describe compactions still on the active branch; abandoned branches are not an all-session event log.
 
-The extension does not copy worker transcripts into the parent. It does not copy the planning conversation into workers either; workers receive the assigned brief plus normal Pi/project context.
+If a worker settles with a normal final reply instead of calling `report_to_parent`, the parent receives a durable **MISSING WORKER REPORT** notification through the same idle-only mailbox delivery. It includes at most 8,000 characters of the final reply, explicitly labeled **unverified worker output**, not a structured report or task acceptance. The worker stays available; the parent can use `send_to_worker` to request a proper report or more work. Notifications are deduplicated per assignment and survive parent reload/resume. Interrupted/error runs, shutdown, and old finals found only on worker reload do not generate this notification. No worker retry, model wakeup, or timeout is added.
+
+Reload the parent **and each waiting worker** (or restart/resume them) to enable this behavior; do not interrupt active workers just to update. Already missed completions are not backfilled: inspect the saved worker session, and ask a live waiting worker for a report via `send_to_worker` (or `/report` in its terminal). A closed worker needs deliberate manual recovery, not metadata edits.
+
+Role/reporting and parent orchestration guidance is supplied as one request-local `orchestration_guidance` system section through Pi's supported `context` hook. It applies to mailbox-triggered and ordinary user turns without adding entries to session history or replacing the existing base prompt/tool declarations. The parent section includes the current worker roster. Pi 0.86.1's initial custom-message-triggered turn bypasses `before_agent_start` and initial standard base-prompt preparation; this extension supplies its own role rules, **not** the missing whole standard Pi prompt. The normal structured-report protocol remains required even with the missing-report fallback.
+
+The extension does not copy worker transcripts into the parent, except for this bounded missing-report final reply. It does not copy the planning conversation into workers either; workers receive the assigned brief plus normal Pi/project context.
 
 ## Inspect or guide a worker
 

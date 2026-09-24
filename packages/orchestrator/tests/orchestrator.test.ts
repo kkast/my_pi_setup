@@ -118,6 +118,81 @@ test("worker termination without a report alerts the parent even while busy, onc
   assert.equal(messages(launches[0].dir, "failure").length, 1);
 });
 
+test("plain final wakes busy parent only after settlement; notice survives reload without replay", async (t) => {
+  const { agent, launches } = setup(t);
+  const parent = agent("parent");
+  await parent.start();
+  const started = await parent.call("spawn_worker", { task: "Work" });
+  const worker = agent(started.details.pi_session_id, launches[0].dir);
+  await worker.start();
+  await until(() => worker.delivered.length === 1);
+  parent.setIdle(false);
+  const final = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Ready for review. " + "x".repeat(9_000) }] };
+  await worker.emit("agent_end", { messages: [final] });
+  assert.equal(messages(launches[0].dir, "missing_report").length, 0);
+  await worker.settle();
+  await worker.settle();
+  const notices = messages(launches[0].dir, "missing_report");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /Unverified worker output/);
+  assert.match(notices[0].text, /\[truncated\]/);
+  assert.ok(notices[0].text.length < 9_000);
+  assert.equal(messages(launches[0].dir, "report").length, 0);
+  assert.equal(readWorker(launches[0].dir).state, "waiting");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(parent.delivered.length, 0);
+  await worker.close("reload");
+  const resumedWorker = agent(started.details.pi_session_id, launches[0].dir, worker.entries);
+  await resumedWorker.start();
+  await resumedWorker.settle();
+  await parent.close("reload");
+  const resumed = agent("parent", undefined, parent.entries);
+  await resumed.start();
+  await until(() => resumed.delivered.length === 1);
+  assert.match(resumed.delivered[0].content, /MISSING WORKER REPORT/);
+  await resumed.close("reload");
+  const again = agent("parent", undefined, resumed.entries);
+  await again.start();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(again.delivered.length, 0);
+  await again.call("send_to_worker", { worker_id: started.details.worker_id, message: "Please report properly" });
+  await until(() => resumedWorker.delivered.length === 1);
+  await resumedWorker.settle(); // No new final: must not reuse previous output.
+  assert.equal(messages(launches[0].dir, "missing_report").length, 1);
+  await resumedWorker.call("report_to_parent", report);
+  await resumedWorker.settle();
+  await until(() => again.delivered.length === 1);
+  assert.match(again.delivered[0].content, /Report from worker/);
+  assert.equal(messages(launches[0].dir, "missing_report").length, 1);
+});
+
+for (const outcome of ["aborted", "error", "length", "toolUse", "late-abort", "compaction-abort", "continuation", "shutdown", "explicit-report"] as const) {
+  test(`no missing-report notification for ${outcome}`, async (t) => {
+    const { agent, launches } = setup(t);
+    const parent = agent("parent");
+    await parent.start();
+    const started = await parent.call("spawn_worker", { task: "Work" });
+    const worker = agent(started.details.pi_session_id, launches[0].dir);
+    await worker.start();
+    await until(() => worker.delivered.length === 1);
+    const controller = new AbortController();
+    (worker.ctx as any).signal = controller.signal;
+    const stopReason = ["aborted", "error", "length", "toolUse"].includes(outcome) ? outcome : "stop";
+    await worker.emit("agent_end", { messages: [{ role: "assistant", stopReason, content: [{ type: "text", text: "Not a report" }] }] });
+    if (outcome === "late-abort") controller.abort();
+    if (outcome === "compaction-abort") await worker.emit("session_compact_failed", { aborted: true });
+    if (outcome === "continuation") {
+      await worker.emit("agent_start");
+      await worker.emit("agent_end", { messages: [] });
+    }
+    if (outcome === "shutdown") await worker.close("reload");
+    if (outcome === "explicit-report") await worker.call("report_to_parent", report);
+    await worker.settle();
+    assert.equal(messages(launches[0].dir, "missing_report").length, 0);
+    if (outcome === "explicit-report") assert.equal(messages(launches[0].dir, "report").length, 1);
+  });
+}
+
 test("explicit handoff titles display fully without truncating and leave instructions intact", async (t) => {
   const { agent, launches } = setup(t);
   const parent = agent("parent");
@@ -300,7 +375,14 @@ test("parent guidelines give advisory continuity and compaction guidance", async
   await parent.start();
   const options = { promptGuidelines: [] as string[], sections: {} };
   await parent.emit("before_agent_start", { systemPromptOptions: options });
-  const guidelines = options.promptGuidelines.join("\n");
+  assert.deepEqual(options.promptGuidelines, [], "user turns do not add duplicate runtime guidelines");
+  const original = [{ role: "system", content: "Existing base", toolsAdded: [{ name: "original-tool" }] }];
+  const [result] = await parent.emit("context", { messages: original });
+  assert.equal(result.messages[0], original[0], "existing base and tools are untouched");
+  assert.equal(original.length, 1, "request-local injection never appends to original context");
+  const [next] = await parent.emit("context", { messages: original });
+  assert.equal(next.messages.length, 2, "repeated requests do not accumulate guidance");
+  const guidelines = result.messages.at(-1).sections.orchestration_guidance;
   assert.match(guidelines, /Consider a fresh review worker at consequential milestones and before accepting risky or substantial changes\. Use focused briefs and concise findings\. Avoid repeated reviews of unchanged work; after fixes, re-review only when their risk or unresolved findings warrant it\./);
   for (const pattern of [/Aim for zero worker compactions/, /compaction_count is 1 or more/, /fresh worker with an explicit handoff/, /even if current context usage is low/, /exception is a small correction or final check/, /Do not discard completed work/, /uncompacted worker/]) {
     assert.match(guidelines, pattern);

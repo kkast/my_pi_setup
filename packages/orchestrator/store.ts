@@ -45,7 +45,8 @@ export type Message = {
   id: string;
   parentId: string;
   workerId: string;
-} & ({ kind: "instruction"; text: string } | { kind: "failure"; text: string } | { kind: "report"; report: Report });
+} & ({ kind: "instruction"; text: string } | { kind: "failure"; text: string }
+  | { kind: "missing_report"; instructionId: string; text: string } | { kind: "report"; report: Report });
 
 export function safeId(id: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error(`Invalid ID: ${id}`);

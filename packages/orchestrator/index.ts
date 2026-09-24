@@ -22,6 +22,18 @@ const extensionPath = fileURLToPath(import.meta.url);
 const text = (maxLength: number) => Type.String({ minLength: 1, maxLength });
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
+// Custom-message turns bypass before_agent_start (and initial base-prompt
+// preparation in Pi 0.86.1). Supply our role rules through the context hook.
+const parentGuidelines = [
+  "When asked to orchestrate a plan, delegate focused tasks using spawn_worker. Give each spawn_worker a concise, descriptive title, and each send_to_worker a descriptive follow-up title so the user can identify the worker and current step without reading long instructions. Keep the plan and decisions here, not worker transcripts. Do not edit the checkout alongside a running worker.",
+  "Call spawn_worker or send_to_worker alone in a turn; each yields until a report arrives. Accept reports or guide the same worker with send_to_worker. You may investigate a waiting worker's question using a new worker, then pass the findings back. Only one worker executes at a time. Ask the user rather than retrying indefinitely.",
+  "Keep waiting workers available for likely follow-ups. When you decide no further follow-up is expected, call stop_worker to release their process memory. Reporting alone never stops a worker; do not stop workers mid-edit.",
+  "Aim for zero worker compactions: assign bounded tasks and prefer a fresh worker before compaction becomes necessary. Compaction is a fallback, not the normal continuation strategy. If compaction_count is 1 or more, prefer a fresh worker with an explicit handoff for substantial follow-up, even if current context usage is low. An exception is a small correction or final check; reaffirm critical constraints when continuing a compacted worker. Do not discard completed work because compaction occurred.",
+  "Choose workers by task continuity, not topic similarity alone. For an uncompacted worker on the same unfinished task, under 60% context usage generally continue; at 60–80% use only a bounded follow-up; above 80% prefer a fresh worker for substantial work. Unrelated work, a new phase, or independent review should use a fresh worker.",
+  "Consider a fresh review worker at consequential milestones and before accepting risky or substantial changes. Use focused briefs and concise findings. Avoid repeated reviews of unchanged work; after fixes, re-review only when their risk or unresolved findings warrant it.",
+  "Context percentages are advisory estimates, not enforced cutoffs; consider the next task's size and unknown usage. After compaction, reaffirm critical constraints in follow-up guidance. Never kill or replace a worker mid-edit just because of context usage; wait for its settled report.",
+].map((guideline) => `For spawn_worker/send_to_worker orchestration: ${guideline}`);
+
 function workerModel(ctx: ExtensionContext, selection?: string) {
   if (selection === undefined) {
     if (!ctx.model) throw new Error("Select a model before spawning a worker.");
@@ -89,6 +101,7 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
   const seenChildren = new Map<string, Set<number>>();
   const liveWorkers = new Set<string>();
   let lifecycleRevision = 0;
+  let plainCompletion: { text: string; signal?: AbortSignal } | undefined;
 
   async function refreshLiveWorkers() {
     const revision = lifecycleRevision;
@@ -370,6 +383,24 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
     unlinkSync(pending);
   }
 
+  function publishMissingReport(ctx: ExtensionContext) {
+    if (!workerDir || !plainCompletion || plainCompletion.signal?.aborted) return;
+    const worker = readWorker(workerDir);
+    const instruction = messages(workerDir, "instruction").at(-1);
+    if (!instruction || !received.has(instruction.id)) return;
+    // Require this assignment's receipt on the active branch, not an old final
+    // from a resumed session or a different branch. Explicit reports win.
+    if (!ctx.sessionManager.getBranch().some((entry) => entry.type === "custom_message" &&
+      entry.customType === MAIL && (entry.details as { messageId?: string })?.messageId === instruction.id)) return;
+    if (messages(workerDir, "report").some((report) => report.id > instruction.id)) return;
+    const id = `${instruction.id}-missing-report`;
+    if (messages(workerDir, "missing_report").some((notice) => notice.id === id)) return;
+    publish(workerDir, {
+      id, kind: "missing_report", parentId: worker.parentId, workerId: worker.id, instructionId: instruction.id,
+      text: `Worker ${worker.id} settled with a normal final reply but did not call report_to_parent. This is a missing-report notification, NOT a structured report or task acceptance. The worker remains available; inspect its output and use send_to_worker to request a report or further work.\nSession: ${worker.sessionFile ?? join(workerDir, "sessions")}\nUnverified worker output (at most 8,000 characters):\n${plainCompletion.text || "[No text in final reply]"}`,
+    });
+  }
+
   async function checkWorkers(ctx: ExtensionContext) {
     for (const { dir, worker } of workers(parentDir)) {
       if (worker.launchFailed || worker.state === "waiting" || worker.state === "closed") continue;
@@ -412,7 +443,7 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
       publishReport(ctx);
       const candidates = workerDir
         ? messages(workerDir, "instruction")
-        : workers(parentDir).flatMap(({ dir }) => [...messages(dir, "report"), ...messages(dir, "failure")]);
+        : workers(parentDir).flatMap(({ dir }) => [...messages(dir, "report"), ...messages(dir, "failure"), ...messages(dir, "missing_report")]);
       const next = candidates.sort((a, b) => a.id.localeCompare(b.id)).find((msg) => !received.has(msg.id));
       if (!next) return;
       delivering = next.id;
@@ -421,6 +452,7 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
         content: next.kind === "instruction"
           ? `Instruction from your orchestrator:\n${next.text}`
           : next.kind === "failure" ? `ORCHESTRATION FAILURE:\n${next.text}`
+          : next.kind === "missing_report" ? `MISSING WORKER REPORT:\n${next.text}`
           : `Report from worker ${next.workerId}:\n${compactionNotice(next.report)}${JSON.stringify(next.report, null, 2)}\nDecide whether to accept this step, send guidance, delegate another task, or ask the user.`,
         display: true,
         details: { messageId: next.id, workerId: next.workerId },
@@ -491,27 +523,21 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
     if (id === delivering) delivering = undefined;
   });
 
-  pi.on("before_agent_start", (event) => {
-    if (workerDir) {
-      event.systemPromptOptions.promptGuidelines.push(
-        "You are an execution worker. Perform the assigned work directly; never delegate, spawn other agents, or launch Pi yourself. Preserve this session for follow-up.",
-        "When ready for review, blocked, or needing guidance, call report_to_parent as your ONLY tool call in that turn, then wait. Report actual check outcomes; never call an unrun check passed. The parent decides acceptance.",
-      );
-    } else {
-      event.systemPromptOptions.promptGuidelines.push(
-        "When asked to orchestrate a plan, delegate focused tasks using spawn_worker. Give each spawn_worker a concise, descriptive title, and each send_to_worker a descriptive follow-up title so the user can identify the worker and current step without reading long instructions. Keep the plan and decisions here, not worker transcripts. Do not edit the checkout alongside a running worker.",
-        "Call spawn_worker or send_to_worker alone in a turn; each yields until a report arrives. Accept reports or guide the same worker with send_to_worker. You may investigate a waiting worker's question using a new worker, then pass the findings back. Only one worker executes at a time. Ask the user rather than retrying indefinitely.",
-      );
-      event.systemPromptOptions.promptGuidelines.push(
-        "Keep waiting workers available for likely follow-ups. When you decide no further follow-up is expected, call stop_worker to release their process memory. Reporting alone never stops a worker; do not stop workers mid-edit.",
-        "Aim for zero worker compactions: assign bounded tasks and prefer a fresh worker before compaction becomes necessary. Compaction is a fallback, not the normal continuation strategy. If compaction_count is 1 or more, prefer a fresh worker with an explicit handoff for substantial follow-up, even if current context usage is low. An exception is a small correction or final check; reaffirm critical constraints when continuing a compacted worker. Do not discard completed work because compaction occurred.",
-        "Choose workers by task continuity, not topic similarity alone. For an uncompacted worker on the same unfinished task, under 60% context usage generally continue; at 60–80% use only a bounded follow-up; above 80% prefer a fresh worker for substantial work. Unrelated work, a new phase, or independent review should use a fresh worker.",
-        "Consider a fresh review worker at consequential milestones and before accepting risky or substantial changes. Use focused briefs and concise findings. Avoid repeated reviews of unchanged work; after fixes, re-review only when their risk or unresolved findings warrant it.",
-        "Context percentages are advisory estimates, not enforced cutoffs; consider the next task's size and unknown usage. After compaction, reaffirm critical constraints in follow-up guidance. Never kill or replace a worker mid-edit just because of context usage; wait for its settled report.",
-      );
-      const roster = workers(parentDir).map(({ worker }) => `${worker.id}: ${worker.title ?? "Untitled worker"}; ${worker.state}; attach: tmux attach -t ${worker.tmux}`);
-      if (roster.length) event.systemPromptOptions.sections.orchestration_workers = roster.join("\n");
-    }
+  pi.on("context", (event) => {
+    const guidelines = workerDir ? [
+      "As a report_to_parent execution worker, perform the assigned work directly; never delegate, spawn other agents, or launch Pi yourself. Preserve this session for follow-up.",
+      "When ready for review, blocked, or needing guidance, call report_to_parent as your ONLY tool call in that turn, then wait. Report actual check outcomes; never call an unrun check passed. The parent decides acceptance.",
+    ] : parentGuidelines;
+    const roster = workerDir ? [] : workers(parentDir).map(({ worker }) =>
+      `${worker.id}: ${worker.title ?? "Untitled worker"}; ${worker.state}${worker.state === "closed" ? "" : `; attach: tmux attach -t ${worker.tmux}`}`);
+    // context is a request-local copy: never appendEntry/sendMessage here.
+    // Named sections replace by name for providers that fold system messages;
+    // mid-conversation providers receive this supplemental system message in place.
+    // Keep the base prompt, existing messages and tool declarations unchanged.
+    return { messages: [...event.messages, {
+      role: "system" as const, content: "", timestamp: Date.now(),
+      sections: { orchestration_guidance: [...guidelines, ...roster].join("\n") },
+    }] };
   });
 
   pi.on("tool_call", (event, ctx) => {
@@ -526,17 +552,39 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
   });
 
   pi.on("agent_start", () => {
+    plainCompletion = undefined;
     if (!workerDir) return;
     // Human guidance queued before handoff invalidates the not-yet-sent report.
     const pending = join(workerDir, "pending-report.json");
     if (existsSync(pending)) unlinkSync(pending);
     saveWorker(workerDir, { ...readWorker(workerDir), state: "running" });
   });
+  pi.on("agent_end", (event, ctx) => {
+    plainCompletion = undefined;
+    if (!workerDir || stopped) return;
+    // agent_end alone is not settlement: Pi may retry/compact/continue. Keep
+    // only this run's final, and retain its signal to detect late cancellation.
+    const final = event.messages.at(-1);
+    if (final?.role !== "assistant" || final.stopReason !== "stop" ||
+      final.content.some((part) => part.type === "toolCall")) return;
+    const output = final.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    plainCompletion = { text: output.length > 8_000 ? `${output.slice(0, 7_980)}\n[truncated]` : output, signal: ctx.signal };
+  });
+  pi.on("session_compact_failed", (event) => {
+    // A user can cancel post-run compaction after the low-level signal ended.
+    if (event.aborted) plainCompletion = undefined;
+  });
   pi.on("agent_settled", (_event, ctx) => {
     if (stopped || !ctx.isIdle()) return;
     if (workerDir) {
-      saveWorker(workerDir, { ...readWorker(workerDir), state: "waiting" });
-      try { publishReport(ctx); updateStatus(ctx); } catch (error) { notifyError(ctx, error); }
+      try {
+        const pending = existsSync(join(workerDir, "pending-report.json"));
+        publishReport(ctx);
+        if (!pending) publishMissingReport(ctx);
+        saveWorker(workerDir, { ...readWorker(workerDir), state: "waiting" });
+        updateStatus(ctx);
+      } catch (error) { notifyError(ctx, error); }
+      finally { plainCompletion = undefined; }
     }
   });
 

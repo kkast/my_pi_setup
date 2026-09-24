@@ -18,7 +18,7 @@ const setupRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 let tmux: string | undefined;
 try { tmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim(); } catch { /* skipped below */ }
 
-test("real Pi + private tmux: spawn, report, investigate, continue, persist", { skip: !tmux, timeout: 90_000 }, async (t) => {
+test("real Pi + private tmux: report and missing-report settlement, continue, persist", { skip: !tmux, timeout: 90_000 }, async (t) => {
   const temp = mkdtempSync(join(tmpdir(), "my-pi-smoke-"));
   const socket = `my-pi-test-${randomUUID()}`;
   const parentId = randomUUID();
@@ -66,11 +66,28 @@ test("real Pi + private tmux: spawn, report, investigate, continue, persist", { 
     const calls = readFileSync(join(config, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls.filter((call) => !call.worker).length, 4);
     assert.equal(calls.filter((call) => call.worker).length, 3);
-    assert.equal(registry.reduce((n, { dir }) => n + messages(dir, "report").length, 0), 3);
+    assert.equal(registry.reduce((n, { dir }) => n + messages(dir, "report").length, 0), 2);
+    assert.equal(registry.reduce((n, { dir }) => n + messages(dir, "missing_report").length, 0), 1);
     const parentFile = readFileSync(join(config, "success"), "utf8");
     const parentTranscript = readFileSync(parentFile, "utf8");
     assert.ok(parentTranscript.includes("ORCHESTRATION_SMOKE_OK"));
     assert.equal(readdirSync(join(temp, "parent-sessions")).length, 1);
+
+    // Ordinary user turns must get the same role rules as mailbox turns.
+    // B's second plain final is the same assignment, so it must not re-notify.
+    const b = registry.find(({ dir }) => messages(dir, "missing_report").length === 1)!;
+    run("send-keys", "-t", `${b.worker.tmux}:0.0`, "Check ordinary worker guidance", "Enter");
+    run("send-keys", "-t", "smoke-parent:0.0", "Check ordinary parent guidance", "Enter");
+    await until(() => readFileSync(join(config, "calls.jsonl"), "utf8").trim().split("\n").length === calls.length + 2, 10_000);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    assert.equal(messages(b.dir, "missing_report").length, 1, "repeated completion is deduplicated per assignment");
+    const callsBeforeResume = readFileSync(join(config, "calls.jsonl"), "utf8").trim().split("\n").length;
+    assert.equal(callsBeforeResume, calls.length + 2, "no automatic extra turns");
+    for (const file of [parentFile, ...registry.map(({ worker }) => worker.sessionFile!)]) {
+      const entries = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(!entries.some((entry) => entry.message?.sections?.orchestration_guidance), "request-local guidance is not appended to saved history");
+      assert.ok(!entries.some((entry) => entry.message?.errorMessage), "all provider-facing prompt assertions passed");
+    }
 
     // Resume real saved sessions, without the worker launch environment.
     // Old mail must not retrigger model calls or turn a worker into a parent.
@@ -89,7 +106,7 @@ test("real Pi + private tmux: spawn, report, investigate, continue, persist", { 
     }
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     const callsAfterResume = readFileSync(join(config, "calls.jsonl"), "utf8").trim().split("\n");
-    assert.equal(callsAfterResume.length, calls.length, "resume must not replay consumed messages");
+    assert.equal(callsAfterResume.length, callsBeforeResume, "resume must not replay consumed messages");
     assert.equal(readWorker(registry[0].dir).state, "waiting");
   } catch (error) {
     let diagnostics = "";
