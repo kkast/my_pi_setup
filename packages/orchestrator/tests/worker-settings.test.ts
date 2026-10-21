@@ -27,6 +27,7 @@ async function setup(t: test.TestContext) {
   } }));
   const runtime = await ModelRuntime.create({ modelsPath, modelsStorePath: join(root, "catalog.json"), credentials: new InMemoryCredentialStore() });
   const parent = harness("settings-parent");
+  parent.ctx.model = { ...parent.ctx.model!, reasoning: true };
   const agents = [parent];
   const launches: Parameters<typeof launchArguments>[0][] = [];
   const overrides = { root, pollMs: 60_000, isAlive: async () => true, launch: async (options: Parameters<typeof launchArguments>[0]) => { launches.push(options); } };
@@ -40,19 +41,20 @@ async function setup(t: test.TestContext) {
   return { root, parent, launches, agents, overrides };
 }
 
-for (const [name, args, expected] of [
+for (const [name, args, expected, effectiveThinking] of [
   ["defaults", {}, ["test", "model", "high"]],
   ["model only", { model: "worker-test-b/shared" }, ["worker-test-b", "shared", "high"]],
   ["thinking only", { thinking: "off" }, ["test", "model", "off"]],
   ["both", { model: "worker-test-a/unique", thinking: "low" }, ["worker-test-a", "unique", "low"]],
   ["unique bare ID", { model: "unique" }, ["worker-test-a", "unique", "high"]],
-  ["slashes and colon in exact ID", { model: "worker-test-a/vendor/model:tag", thinking: "max" }, ["worker-test-a", "vendor/model:tag", "max"]],
-  ["non-reasoning model leaves clamping to Pi", { model: "worker-test-a/plain", thinking: "xhigh" }, ["worker-test-a", "plain", "xhigh"]],
+  ["slashes and colon in exact ID", { model: "worker-test-a/vendor/model:tag", thinking: "max" }, ["worker-test-a", "vendor/model:tag", "max"], "high"],
+  ["non-reasoning model leaves clamping to Pi", { model: "worker-test-a/plain", thinking: "xhigh" }, ["worker-test-a", "plain", "xhigh"], "off"],
 ] as const) {
   test(`worker settings: ${name} forwarded to tmux CLI without changing parent`, async (t) => {
     const { parent, launches } = await setup(t);
-    await parent.call("spawn_worker", { task: "Check settings", ...args });
+    const result = await parent.call("spawn_worker", { task: "Check settings", ...args });
     const [options] = launches;
+    assert.equal(result.content[0].text, `Worker: Check settings\nModel: ${expected[0]}/${expected[1]}\nThinking: ${effectiveThinking ?? expected[2]}\nFolder: ${options.dir}\nAttach: ${result.details.attach}`);
     assert.deepEqual([options.provider, options.model, options.thinking], expected);
     const command = launchArguments(options).at(-1)!;
     assert.ok(command.includes(`'--provider' '${expected[0]}' '--model' '${expected[1]}' '--thinking' '${expected[2]}'`));
@@ -66,7 +68,8 @@ for (const [name, args, expected] of [
 test("worker settings: thinking fallback and every Pi enum level", async (t) => {
   const { parent, launches } = await setup(t);
   (parent.ctx as any).thinkingLevel = undefined;
-  await parent.call("spawn_worker", { task: "Fallback" });
+  const fallback = await parent.call("spawn_worker", { task: "Fallback" });
+  assert.match(fallback.content[0].text, /\nModel: test\/model\nThinking: medium\n/);
   assert.equal(launches[0].thinking, "medium");
   const tool = parent.tools.get("spawn_worker");
   for (const thinking of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {

@@ -41,7 +41,10 @@ test("Pi restores handoff rows before session_start without generic JSON fallbac
     const title = "Complete API ownership and test fixture follow-up without losing context";
     const followUp = "Verify fixture registration and final compatibility checks across worker sessions";
     const label = name === "spawn_worker" ? `Worker: ${title}` : `Continuing: ${title} — ${followUp}`;
-    const body = `${label}\nFolder: /tmp/orchestration/parent/workers/worker-id\nAttach: tmux attach -t pi-parent-worker-id`;
+    const settings = name === "spawn_worker"
+      ? "\nModel: custom-provider/vendor/long-model-identifier:version\nThinking: high"
+      : "";
+    const body = `${label}${settings}\nFolder: /tmp/orchestration/parent/workers/worker-id\nAttach: tmux attach -t pi-parent-worker-id`;
     const args = { title, task: "PRIVATE_TASK ".repeat(1000), message: "PRIVATE_MESSAGE ".repeat(1000), worker_id: "worker-id" };
     const row = new ToolExecutionComponent(name, "call", {}, {}, definition, { requestRender() {} } as unknown as TUI, root);
     row.updateArgs(args);

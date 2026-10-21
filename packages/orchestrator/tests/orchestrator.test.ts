@@ -42,7 +42,7 @@ test("A reports, B investigates, A continues in its original session", async (t)
   const first = await parent.call("spawn_worker", { task: "Implement A" });
   assert.equal(first.terminate, true);
   assert.equal(parent.statuses.get("orchestrator"), "Orchestrator: waiting on worker | Live Workers: 1");
-  assert.equal(first.content[0].text, `Worker: Implement A\nFolder: ${launches[0].dir}\nAttach: ${first.details.attach}`);
+  assert.equal(first.content[0].text, `Worker: Implement A\nModel: test/model\nThinking: off\nFolder: ${launches[0].dir}\nAttach: ${first.details.attach}`);
   assert.doesNotMatch(first.content[0].text, /session_file|metadata_file|pi_session_id/);
   assert.equal(launches[0].model, "model");
   assert.equal(launches[0].thinking, "high");

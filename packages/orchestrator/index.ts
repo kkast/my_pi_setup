@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Container, Text } from "@earendil-works/pi-tui";
 import {
@@ -61,7 +61,7 @@ function workerTitle(task: string, title?: string): string {
   const boundary = prefix.lastIndexOf(" ");
   return `${(boundary > 20 ? prefix.slice(0, boundary) : prefix).trimEnd()}…`;
 }
-// Explicit wrapping keeps all three fields visible even in collapsed rows.
+// Explicit wrapping keeps all fields visible even in collapsed rows.
 // Errors also arrive as text without success details.
 const renderHandoffResult: NonNullable<ToolDefinition["renderResult"]> = (result, _options, theme) =>
   new Text(theme.fg("toolOutput", result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")), 0, 0);
@@ -214,7 +214,7 @@ export default function orchestrator(pi: ExtensionAPI, overrides: Partial<Runtim
           }
           const result = details(dir, readWorker(dir));
           return {
-            content: [{ type: "text", text: `Worker: ${worker.title}\nFolder: ${dir}\nAttach: ${result.attach}` }],
+            content: [{ type: "text", text: `Worker: ${worker.title}\nModel: ${model.provider}/${model.id}\nThinking: ${clampThinkingLevel(model, thinking)}\nFolder: ${dir}\nAttach: ${result.attach}` }],
             details: result,
             terminate: true,
           };
